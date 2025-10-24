@@ -24,4 +24,6 @@ So to run this, you obviously need to clone the repo and have rustup installed (
 
 Within the root directory of the project, just run "cargo run". The radio will click and then when you see the audio meter, you should be good to launch your digital mode application and configure it like in the screenshots in the image directory.
 
+The audio seems to have it's sweet spot when the volume on the radio is set to 9.
+
 IMPORTANT: Do not kill the process with CTRL-C, just press ESC in the terminal. This cleanly removes the PulseAudio interface, tells the radio to resume sending audio back out the speaker, and cleanly kills the program.
