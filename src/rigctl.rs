@@ -1,9 +1,6 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
-
 use crate::trusdx;
 use serialport;
 
@@ -177,7 +174,6 @@ pub fn spawn_rigctl_server(
         }
     }
 
-    thread::sleep(Duration::from_millis(500));
 
     std::thread::spawn(move || {
         let addr = ("127.0.0.1", 4532);

@@ -1,30 +1,20 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use std::time::Duration;
- 
-
 use anyhow::Result;
 use serialport;
 
 mod audio;
 mod rigctl;
 mod trusdx;
-mod config;
 mod cli;
 
 fn main() -> Result<()> {
-    config::DIAG_US_AT_TX_START.store(false, std::sync::atomic::Ordering::Relaxed);
-    config::DIAG_US_FRAME_TX.store(true, std::sync::atomic::Ordering::Relaxed);
-
     
     audio::cleanup_trusdx_audio();
 
-    let _mid = audio::create_trusdx_audio_interface();
+    let _mid = audio::create_trusdx_audio_interface(11520);
 
-
-
-    
-    
     let mut port = trusdx::open_trusdx_serial()?;
     
     let _ = trusdx::control_rts(&mut *port, false);
@@ -99,9 +89,7 @@ fn main() -> Result<()> {
         thread::sleep(Duration::from_millis(10));
         if !tx_now && last_poll.elapsed() >= Duration::from_secs(2) {
             if std::time::Instant::now().duration_since(last_tx_end) >= Duration::from_millis(500) {
-                if !tx_now {
-                    if let Ok(mut s) = ser.lock() { let _ = trusdx::query_vfo_a(&mut **s); }
-                }
+                if let Ok(mut s) = ser.lock() { let _ = trusdx::query_vfo_a(&mut **s); }
             }
             last_poll = std::time::Instant::now();
         }

@@ -17,7 +17,6 @@ const CMD_MD3_CW: &[u8] = b"MD3;";
 const CMD_MD4_FM: &[u8] = b"MD4;";
 const CMD_MD5_AM: &[u8] = b"MD5;";
 
-const CMD_UA0: &[u8] = b"UA0;";
 const CMD_UA1: &[u8] = b"UA1;";
 const CMD_UA2: &[u8] = b"UA2;";
 
@@ -62,10 +61,15 @@ pub fn open_trusdx_serial() -> anyhow::Result<Box<dyn SerialPort + Send>> {
     Ok(port)
 }
 
-fn send_command_to_radio(s: &mut dyn SerialPort, data: &[u8]) -> std::io::Result<()> {
-    s.write_all(data)
-}
 
+fn send_command_to_radio(s: &mut dyn SerialPort, data: &[u8]) -> std::io::Result<()> {
+    let _ = flush_serial_line(s);
+    std::thread::sleep(std::time::Duration::from_micros(100));
+    let res = s.write_all(data);
+    let _ = flush_serial_line(s);
+    std::thread::sleep(std::time::Duration::from_micros(100));
+    res
+}
 
 pub fn start_transmit_baseband(s: &mut dyn SerialPort) -> std::io::Result<()> { 
     let res = send_command_to_radio(s, CMD_TX0);
@@ -90,45 +94,46 @@ pub fn set_mode(s: &mut dyn SerialPort, mode: u8) -> std::io::Result<()> {
     send_command_to_radio(s, buf)
 }
 
-pub fn disable_streaming(s: &mut dyn SerialPort) -> std::io::Result<()> { 
-    send_command_to_radio(s, CMD_UA0) 
+
+pub fn flush_serial_line(s: &mut dyn SerialPort) -> std::io::Result<()> {
+    s.flush()
+}
+
+pub fn drain_serial_line(s: &mut dyn SerialPort) -> std::io::Result<()> {
+    let mut discard_buf = [0u8; 1024];
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_millis(10) {
+        match s.read(&mut discard_buf) {
+            Ok(0) => break,
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+    }
+    Ok(())
 }
 
 pub fn enable_streaming_speaker_off(s: &mut dyn SerialPort) -> std::io::Result<()> { 
+    let _ = drain_serial_line(s);
     let _ = control_rts(s,true)?;
-    let _ = send_command_to_radio(s, CMD_RX);
-    let _ = control_rts(s,false)?;
-    
-    let _ = s.flush();
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    
-    let _ = control_rts(s,true)?;
-    let result = send_command_to_radio(s, CMD_UA2);
+    let mut combined = Vec::new();
+    combined.extend_from_slice(CMD_RX);
+    combined.extend_from_slice(CMD_UA2);
+    let result = send_command_to_radio(s, &combined);
     let _ = control_rts(s,false)?;
     result
 }
 
 pub fn enable_streaming_speaker_on(s: &mut dyn SerialPort) -> std::io::Result<()> { 
+    let _ = drain_serial_line(s);
     let _ = control_rts(s,true)?;
-    let _ = send_command_to_radio(s, CMD_RX);
-    let _ = control_rts(s,false)?;
-    
-    let _ = s.flush();
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    
-    let _ = control_rts(s,true)?;
-    let result = send_command_to_radio(s, CMD_UA1);
+    let mut combined = Vec::new();
+    combined.extend_from_slice(CMD_UA1);
+    combined.extend_from_slice(CMD_RX);
+    let result = send_command_to_radio(s, &combined);
     let _ = control_rts(s,false)?;
     result
 }
 
-pub fn send_audio_stream(s: &mut dyn SerialPort, audio_data: &[u8]) -> std::io::Result<()> {
-    let mut buf = Vec::with_capacity(2 + audio_data.len() + 1);
-    buf.extend_from_slice(b"US");
-    buf.extend_from_slice(audio_data);
-    buf.push(b';');
-    send_command_to_radio(s, &buf)
-}
 
 pub fn send_audio_stream_raw(s: &mut dyn SerialPort, audio_data: &[u8]) -> std::io::Result<()> {
     match s.write(audio_data) {

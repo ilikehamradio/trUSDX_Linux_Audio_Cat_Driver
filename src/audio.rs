@@ -8,7 +8,6 @@ use libpulse_binding as pulse;
 use libpulse_binding::def::BufferAttr;
 use libpulse_simple_binding as psimple;
 use serialport;
-use crate::config::{DIAG_US_AT_TX_START, DIAG_US_FRAME_TX};
 
 pub fn cleanup_trusdx_audio() {
     if let Ok(output) = Command::new("pactl").arg("list").arg("short").arg("modules").output() {
@@ -22,18 +21,30 @@ pub fn cleanup_trusdx_audio() {
             }
         }
     }
-    thread::sleep(Duration::from_millis(300));
 }
 
-pub fn create_trusdx_audio_interface() -> Option<u32> {
+pub fn create_trusdx_audio_interface(_audio_tx_rate: u32) -> Option<u32> {
     let sink_output = Command::new("pactl")
-        .args(["load-module", "module-null-sink", "sink_name=TRUSDX", "sink_properties=device.description=TRUSDX Audio"]) 
+        .args([
+            "load-module", 
+            "module-null-sink", 
+            "sink_name=TRUSDX", 
+            "sink_properties=device.description=\"TRUSDX Audio\""
+        ]) 
         .output();
+    
     let sink_module_id = match sink_output {
-        Ok(result) if result.status.success() => String::from_utf8_lossy(&result.stdout).trim().parse::<u32>().ok(),
-        _ => None,
+        Ok(result) if result.status.success() => {
+            let output_str = String::from_utf8_lossy(&result.stdout);
+            output_str.trim().parse::<u32>().ok()
+        },
+        Ok(_result) => {
+            None
+        },
+        Err(_e) => {
+            None
+        }
     };
-    thread::sleep(Duration::from_millis(300));
     sink_module_id
 }
 
@@ -48,11 +59,11 @@ pub fn setup_pulseaudio(audio_rx_rate: u32, audio_tx_rate: u32) -> anyhow::Resul
     let spec_tx = pulse::sample::Spec { format: pulse::sample::Format::S16le, channels: 1, rate: audio_tx_rate };
 
     let pb_attr = BufferAttr {
-        maxlength: (audio_rx_rate / 10) * std::mem::size_of_val(&0f32) as u32,
+        maxlength: (audio_rx_rate / 4) * std::mem::size_of_val(&0f32) as u32,
         tlength: (audio_rx_rate / 50) * std::mem::size_of_val(&0f32) as u32,
         prebuf: (audio_rx_rate / 100) * std::mem::size_of_val(&0f32) as u32,
         minreq: (audio_rx_rate / 200) * std::mem::size_of_val(&0f32) as u32,
-        fragsize: (audio_rx_rate / 200) * std::mem::size_of_val(&0f32) as u32,
+        fragsize: (audio_rx_rate / 100) * std::mem::size_of_val(&0f32) as u32,
     };
 
     let pa_playback = psimple::Simple::new(
@@ -66,11 +77,12 @@ pub fn setup_pulseaudio(audio_rx_rate: u32, audio_tx_rate: u32) -> anyhow::Resul
         Some(&pb_attr),
     )?;
 
+    
     let rec_attr = BufferAttr {
-        maxlength: (audio_tx_rate / 5) * std::mem::size_of_val(&0i16) as u32,
-        tlength: (audio_tx_rate / 20) * std::mem::size_of_val(&0i16) as u32,
-        prebuf: (audio_tx_rate / 50) * std::mem::size_of_val(&0i16) as u32,
-        minreq: (audio_tx_rate / 100) * std::mem::size_of_val(&0i16) as u32,
+        maxlength: (audio_tx_rate / 4) * std::mem::size_of_val(&0i16) as u32,
+        tlength: (audio_tx_rate / 50) * std::mem::size_of_val(&0i16) as u32,
+        prebuf: (audio_tx_rate / 100) * std::mem::size_of_val(&0i16) as u32,
+        minreq: (audio_tx_rate / 200) * std::mem::size_of_val(&0i16) as u32,
         fragsize: (audio_tx_rate / 100) * std::mem::size_of_val(&0i16) as u32,
     };
 
@@ -100,15 +112,22 @@ pub fn run_audio_bridge(
     cat_queue: Arc<Mutex<Vec<Vec<u8>>>>,
     streaming_started: Arc<AtomicBool>,
 ) {
+    
     thread::spawn(move || {
+        
         let mut state_rx_streaming = false;
         let mut text_buf: Vec<u8> = Vec::with_capacity(1024);
-        let mut wave_buf: Vec<u8> = Vec::with_capacity(4096);
+        let mut wave_buf: Vec<u8> = Vec::with_capacity(8192);
         let mut rx_tmp = [0u8; 512];
-        let mut f32_buf: Vec<f32> = Vec::with_capacity(512);
+        let mut f32_buf: Vec<f32> = Vec::with_capacity(1024);
         
-        let mut tx_i16_buf = vec![0i16; 512];
+        let _audio_processing_buf = vec![0f32; 1024];
+        
+        
+        let mut tx_i16_buf = vec![0i16; 48];
         let mut tx_byte_buf = vec![0u8; tx_i16_buf.len() * 2];
+        let mut u8_buf = vec![0u8; 48];  
+        
         
         let drain_cat = || {
             let mut writes: Vec<Vec<u8>> = Vec::new();
@@ -120,13 +139,18 @@ pub fn run_audio_bridge(
             }
             if !writes.is_empty() {
                 if let Ok(mut s) = ser.lock() {
-                    for w in writes { let _ = s.write_all(&w); }
+                    for w in writes { 
+                        let _ = s.write_all(&w); 
+                    }
+                    let _ = crate::trusdx::flush_serial_line(&mut **s);
                 }
             }
         };
         
         let mut last_idle_drain = std::time::Instant::now();
-        let mut sent_diag_us = false;
+        let mut _sent_diag_us = false;
+        let mut _tx_start_time = std::time::Instant::now();
+        let mut _audio_frame_count = 0u32;
         
         let mut prev_tx = false;
         loop {
@@ -134,69 +158,113 @@ pub fn run_audio_bridge(
             
             let is_tx = *tx_state.lock().unwrap();
             let tx_rising = is_tx && !prev_tx;
+            let tx_falling = !is_tx && prev_tx;
+            
+            if tx_rising {
+                _tx_start_time = std::time::Instant::now();
+                _audio_frame_count = 0;
+                
+                // Small delay to let radio process TX command
+                thread::sleep(Duration::from_millis(10));
+                
+                let mut drain_buf = vec![0u8; 1024];
+                for _ in 0..10 {
+                    match audio.pa_record.read(&mut drain_buf) {
+                        Ok(_) => {
+                        },
+                        Err(_) => break,
+                    }
+                }
+            }
+            
+            if tx_falling {
+                state_rx_streaming = false;
+                wave_buf.clear();
+                text_buf.clear();
+                streaming_started.store(false, Ordering::Relaxed);
+                
+                // Give radio time to process TX->RX transition
+                thread::sleep(Duration::from_millis(30));
+                if let Ok(mut s) = ser.lock() {
+                    let _ = crate::trusdx::enable_streaming_speaker_off(&mut **s);
+                }
+                
+                // Wait for radio to resume streaming - shorter timeout, single retry
+                let start = std::time::Instant::now();
+                while !streaming_started.load(Ordering::Relaxed) && start.elapsed() < Duration::from_millis(200) {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                
+                // If no streaming after 200ms, try once more
+                if !streaming_started.load(Ordering::Relaxed) {
+                    if let Ok(mut s) = ser.lock() {
+                        let _ = crate::trusdx::enable_streaming_speaker_off(&mut **s);
+                    }
+                    let start = std::time::Instant::now();
+                    while !streaming_started.load(Ordering::Relaxed) && start.elapsed() < Duration::from_millis(100) {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            }
+            
             prev_tx = is_tx;
             
             if is_tx {
-                if tx_rising {
-                }
                 if !cat_queue.lock().unwrap().is_empty() {
-                    if let Ok(mut s) = ser.lock() { let _ = s.flush(); }
-                    if let Ok(mut s) = ser.lock() { let _ = s.write_all(b";"); let _ = s.flush(); }
                     drain_cat();
                 }
+                
                 *input_level.lock().unwrap() = 0.0;
-                if tx_rising { sent_diag_us = false; }
-                if !sent_diag_us && DIAG_US_AT_TX_START.load(Ordering::Relaxed) {
-                    if let Ok(mut s) = ser.lock() { let _ = s.write_all(b"US"); }
-                    sent_diag_us = true;
-                }
+
                 match audio.pa_record.read(&mut tx_byte_buf) {
                     Ok(_) => {
-                    for i in 0..tx_i16_buf.len() {
-                        let lo = tx_byte_buf[i*2] as u16;
-                        let hi = tx_byte_buf[i*2+1] as u16;
-                        let word = (hi << 8) | lo;
-                        tx_i16_buf[i] = word as i16;
-                    }
-                    let mut sum_sq = 0.0f32;
-                    for &v in &tx_i16_buf { let f = (v as f32) / 32768.0; sum_sq += f * f; }
-                    let rms = (sum_sq / (tx_i16_buf.len() as f32)).sqrt().min(1.0);
-                    {
-                        let mut lvl = output_level.lock().unwrap();
-                        *lvl = rms;
-                    }
-                    
-                    const SILENCE_THRESHOLD: f32 = 0.001;
-                    if rms < SILENCE_THRESHOLD {
-                        continue;
-                    }
-                    const TX_GAIN: f32 = 1.0;
-                    let mut u8_buf: Vec<u8> = tx_i16_buf.iter()
-                        .map(|&x| {
+                        _audio_frame_count += 1;
+                        
+                        for i in 0..tx_i16_buf.len() {
+                            let lo = tx_byte_buf[i*2] as u16;
+                            let hi = tx_byte_buf[i*2+1] as u16;
+                            let word = (hi << 8) | lo;
+                            tx_i16_buf[i] = word as i16;
+                        }
+                        let mut sum_sq = 0.0f32;
+                        for &v in &tx_i16_buf { let f = (v as f32) / 32768.0; sum_sq += f * f; }
+                        let rms = (sum_sq / (tx_i16_buf.len() as f32)).sqrt().min(1.0);
+                        {
+                            let mut lvl = output_level.lock().unwrap();
+                            *lvl = rms;
+                        }
+                        
+                        if rms < 0.05 {
+                            continue;
+                        }
+                        
+                        const TX_GAIN: f32 = 1.0;  
+                        for (i, &x) in tx_i16_buf.iter().enumerate() {
                             let scaled = ((x as f32) * TX_GAIN).clamp(-32768.0, 32767.0) as i16;
-                            let byte = (128i16 + (scaled >> 8)) as i16;
-                            byte.clamp(0, 255) as u8
-                        })
-                        .collect();
-                    for b in &mut u8_buf { if *b == b';' { *b = b':'; } }
-                    if let Ok(mut s) = ser.lock() { 
-                        if DIAG_US_FRAME_TX.load(Ordering::Relaxed) {
-                            let _ = crate::trusdx::send_audio_stream(&mut **s, &u8_buf);
-                        } else {
+                            let byte = 128i16 + (scaled / 256); 
+                            u8_buf[i] = byte.clamp(0, 255) as u8;
+                        }
+                        
+                        for b in &mut u8_buf { if *b == b';' { *b = b':'; } }
+                        if let Ok(mut s) = ser.lock() { 
                             let _ = crate::trusdx::send_audio_stream_raw(&mut **s, &u8_buf);
                         }
                     }
-                    }
-                    Err(_) => {
-                        thread::sleep(Duration::from_millis(1));
+                    Err(_e) => {
+                        continue;
                     }
                 }
             } else {
-                sent_diag_us = false;
+                _sent_diag_us = false;
+                
                 *output_level.lock().unwrap() = 0.0;
+                
                 let n = { 
-                    let mut s = ser.lock().unwrap(); 
-                    s.read(&mut rx_tmp).unwrap_or(0) 
+                    if let Ok(mut s) = ser.lock() { 
+                        s.read(&mut rx_tmp).unwrap_or(0) 
+                    } else {
+                        0
+                    }
                 };
                 
                 if n == 0 {
@@ -206,11 +274,11 @@ pub fn run_audio_bridge(
                         }
                         last_idle_drain = std::time::Instant::now();
                     }
+                    
                     {
                         let mut lvl = input_level.lock().unwrap();
                         *lvl *= 0.85f32;
                     }
-                    thread::sleep(Duration::from_millis(1));
                     continue;
                 }
                 
@@ -220,16 +288,16 @@ pub fn run_audio_bridge(
                     i += 1;
                     
                     if state_rx_streaming {
+                        
                         if b == b';' {
                             if !wave_buf.is_empty() {
-                                let mut sum_sq = 0.0f32;
+                                
+                                let mut peak = 0.0f32;
                                 for &samp in &wave_buf {
-                                    let f = ((samp as f32) - 128.0) / 128.0;
-                                    sum_sq += f * f;
+                                    let f = ((samp as f32) - 128.0) / 128.0; 
+                                    peak = peak.max(f.abs());
                                 }
-                                let rms = (sum_sq / (wave_buf.len() as f32)).sqrt().min(1.0);
-                                let scaled_rms = (rms * 2.5).min(1.0);
-                                *input_level.lock().unwrap() = scaled_rms;
+                                *input_level.lock().unwrap() = (peak * 2.1).min(1.0);
                                 
                                 f32_buf.clear();
                                 for &samp in &wave_buf {
@@ -245,18 +313,18 @@ pub fn run_audio_bridge(
                             }
                             wave_buf.clear();
                             state_rx_streaming = false;
+                            
                             drain_cat();
                         } else {
                             wave_buf.push(b);
-                            if wave_buf.len() >= 256 {
-                                let mut sum_sq = 0.0f32;
+                            if wave_buf.len() >= 512 {
+                                
+                                let mut peak = 0.0f32;
                                 for &samp in &wave_buf {
                                     let f = ((samp as f32) - 128.0) / 128.0;
-                                    sum_sq += f * f;
+                                    peak = peak.max(f.abs());
                                 }
-                                let rms = (sum_sq / (wave_buf.len() as f32)).sqrt().min(1.0);
-                                let scaled_rms = (rms * 2.5).min(1.0);
-                                *input_level.lock().unwrap() = scaled_rms;
+                                *input_level.lock().unwrap() = (peak * 2.1).min(1.0);
                                 
                                 f32_buf.clear();
                                 for &samp in &wave_buf { 
@@ -275,6 +343,7 @@ pub fn run_audio_bridge(
                         continue;
                     }
                     
+                    
                     text_buf.push(b);
                     if text_buf.len() == 2 && text_buf[0] == b'U' && text_buf[1] == b'S' {
                         text_buf.clear();
@@ -285,6 +354,7 @@ pub fn run_audio_bridge(
                     
                     if b == b';' {
                         if !text_buf.is_empty() {
+                            
                             if text_buf.len() >= 2 && text_buf[0] == b'F' && text_buf[1] == b'A' {
                                 if let Ok(s) = std::str::from_utf8(&text_buf) {
                                     let digits: String = s.chars().skip(2).take_while(|c| c.is_ascii_digit()).collect();
@@ -294,6 +364,7 @@ pub fn run_audio_bridge(
                                 }
                             }
                             if text_buf.len() >= 2 && text_buf[0] == b'M' && text_buf[1] == b'D' {
+                                
                                 let mode_str = match text_buf.get(2).copied().unwrap_or(b'2') {
                                     b'1' => "LSB",
                                     b'2' => "USB",
@@ -306,6 +377,7 @@ pub fn run_audio_bridge(
                             }
                         }
                         text_buf.clear();
+                        
                         if !cat_queue.lock().unwrap().is_empty() { 
                             drain_cat(); 
                         }
