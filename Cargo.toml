@@ -1,0 +1,25 @@
+[package]
+name = "trusdx_linux_driver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+serialport = "4.3"
+libpulse-binding = "2.28.1"
+libpulse-simple-binding = "2.28.1"
+tiny_http = "0.12"
+termios = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+libc = "0.2"
+pico-args = "0.5"
+ctrlc = "3.4"
+gtk = { version = "0.18", features = ["v3_24"] }
+gio = "0.18"
+glib = "0.18"
+
+[package.metadata.bundle]
+auto_link = true
+name = "trUSDX Linux Audio Driver"
+short_description = "trUSDX Linux Audio Driver"
+long_description = "trUSDX Linux Audio Driver"
