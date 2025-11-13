@@ -12,7 +12,7 @@ mod gui;
 mod shutdown;
 
 fn main() -> Result<()> {
-    audio::cleanup_trusdx_audio();
+    audio::cleanup_trusdx_audio_interfaces();
 
     let _mid = audio::create_trusdx_audio_interface(11520);
 
@@ -35,9 +35,12 @@ fn main() -> Result<()> {
             while !streaming_started.load(Ordering::Relaxed) && start.elapsed() < Duration::from_millis(250) {
                 thread::sleep(Duration::from_millis(10));
             }
+            // Check if streaming started successfully
             if streaming_started.load(Ordering::Relaxed) { break; }
+            // Check if maximum retry attempts reached
             if attempts >= 2 { break; }
             attempts += 1;
+            // Check if serial port lock acquired successfully
             if let Ok(mut s) = ser.lock() {
                 let _ = trusdx::enable_streaming_speaker_off(&mut **s);
             }
@@ -87,18 +90,23 @@ fn main() -> Result<()> {
     let mut last_tx_end = std::time::Instant::now() - std::time::Duration::from_secs(5);
     
     loop {
+        // Check if shutdown flag is set
         if shutting_down.load(Ordering::Relaxed) { break; }
         let in_lvl = *input_level.lock().unwrap();
         let out_lvl = *output_level.lock().unwrap();
         let freq = *freq_state.lock().unwrap();
         let mode = mode_state.lock().unwrap().clone();
         let tx_now = *tx_state.lock().unwrap();
+        // Check if TX just ended (transition from TX to RX)
         if prev_tx_state && !tx_now { last_tx_end = std::time::Instant::now(); }
         prev_tx_state = tx_now;
         cli::render_levels(in_lvl, out_lvl, freq, &mode, tx_now);
         thread::sleep(Duration::from_millis(10));
+        // Check if in RX mode and poll interval elapsed
         if !tx_now && last_poll.elapsed() >= Duration::from_secs(2) {
+            // Check if enough time passed since last TX ended
             if std::time::Instant::now().duration_since(last_tx_end) >= Duration::from_millis(500) {
+                // Check if serial port lock acquired successfully
                 if let Ok(mut s) = ser.lock() { let _ = trusdx::query_vfo_a(&mut **s); }
             }
             last_poll = std::time::Instant::now();
@@ -108,7 +116,7 @@ fn main() -> Result<()> {
     
     print!("\x1B[2J\x1B[H");
     std::io::Write::flush(&mut std::io::stdout()).ok();
-    audio::cleanup_trusdx_audio();
+    audio::cleanup_trusdx_audio_interfaces();
     Ok(())
 }
 

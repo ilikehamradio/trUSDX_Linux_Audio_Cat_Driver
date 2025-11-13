@@ -3,7 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 use gtk::prelude::*;
-use gtk::{Builder, ProgressBar, Statusbar, Window};
+use gtk::{Builder, Label, ProgressBar, Window};
 
 const GLADE_UI: &str = include_str!("gui.glade");
 
@@ -24,6 +24,7 @@ pub fn setup_gui(
     let display = std::env::var("DISPLAY").ok();
     let wayland = std::env::var("WAYLAND_DISPLAY").ok();
     
+    // Check if neither X11 nor Wayland display is available
     if display.is_none() && wayland.is_none() {
         return Err("Neither DISPLAY nor WAYLAND_DISPLAY environment variables are set. Cannot initialize GUI.".to_string());
     }
@@ -44,9 +45,17 @@ pub fn setup_gui(
         .object("prog_rx_level")
         .ok_or("Could not find prog_rx_level progress bar")?;
     
-    let statusbar: Statusbar = builder
-        .object("statusbar")
-        .ok_or("Could not find statusbar object in glade file")?;
+    let lbl_freq: Label = builder
+        .object("lblFreq")
+        .ok_or("Could not find lblFreq label in glade file")?;
+    
+    let lbl_mode: Label = builder
+        .object("lblMode")
+        .ok_or("Could not find lblMode label in glade file")?;
+    
+    let lbl_state: Label = builder
+        .object("lblState")
+        .ok_or("Could not find lblState label in glade file")?;
     
     prog_tx_level.set_show_text(true);
     prog_rx_level.set_show_text(true);
@@ -76,9 +85,12 @@ pub fn setup_gui(
     let tx_state_for_timeout = tx_state.clone();
     let prog_tx_for_timeout = prog_tx_level.clone();
     let prog_rx_for_timeout = prog_rx_level.clone();
-    let statusbar_for_timeout = statusbar.clone();
+    let lbl_freq_for_timeout = lbl_freq.clone();
+    let lbl_mode_for_timeout = lbl_mode.clone();
+    let lbl_state_for_timeout = lbl_state.clone();
     
     let _ = glib::timeout_add_local(Duration::from_millis(50), move || {
+        // Check if shutdown flag is set
         if shutting_down_for_timeout.load(Ordering::Relaxed) {
             return glib::ControlFlow::Break;
         }
@@ -98,11 +110,11 @@ pub fn setup_gui(
         let mode = mode_state_for_timeout.lock().unwrap().clone();
         let tx_now = *tx_state_for_timeout.lock().unwrap();
         let freq_mhz = (freq as f64) / 1_000_000.0f64;
-        let rts = if crate::trusdx::last_rts_state() { "H" } else { "L" };
-        let status_text = format!("MODE: {} FREQ: {:.5} MHz STATE: {} RTS:{}", 
-            mode, freq_mhz, if tx_now { "TX" } else { "RX" }, rts);
-        statusbar_for_timeout.pop(0);
-        statusbar_for_timeout.push(0, &status_text);
+        let freq_text = format!("{:.5} MHz", freq_mhz);
+        lbl_freq_for_timeout.set_text(&freq_text);
+        lbl_mode_for_timeout.set_text(&mode);
+        let state_text = if tx_now { "TX" } else { "RX" };
+        lbl_state_for_timeout.set_text(state_text);
         
         glib::ControlFlow::Continue
     });
@@ -123,6 +135,7 @@ pub fn spawn_gui(
     tx_state: Arc<Mutex<bool>>,
 ) {
     thread::spawn(move || {
+        // Check if GUI setup failed
         if let Err(e) = setup_gui(
             input_level,
             output_level,

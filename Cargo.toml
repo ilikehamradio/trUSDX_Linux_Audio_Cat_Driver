@@ -17,9 +17,3 @@ ctrlc = "3.4"
 gtk = { version = "0.18", features = ["v3_24"] }
 gio = "0.18"
 glib = "0.18"
-
-[package.metadata.bundle]
-auto_link = true
-name = "trUSDX Linux Audio Driver"
-short_description = "trUSDX Linux Audio Driver"
-long_description = "trUSDX Linux Audio Driver"
