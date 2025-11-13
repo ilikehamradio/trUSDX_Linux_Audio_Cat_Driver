@@ -33,7 +33,7 @@ The GTK-based graphical interface displays audio level meters and radio status i
 
 ![Audio Control](images/AudioControl.png)
 
-Monitor and control audio levels for both receive and transmit operations.
+Set Input to TRUSDX.monitor and Output to TRUSDX
 
 ### Radio Control
 
